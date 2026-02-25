@@ -15,8 +15,8 @@ pub trait MazeAlgo {
 
 }
 
-pub fn get_algorithm(algo: &String, ani: bool) -> Result<Box<MazeAlgo>, String> {
-    match algo.as_ref() {
+pub fn get_algorithm(algo: &str, ani: bool) -> Result<Box<dyn MazeAlgo>, String> {
+    match algo {
         "dfs" => Ok(Box::new(DfsAlgo::new(ani))),
         "kruskals" => Ok(Box::new(KruskalsAlgo::new(ani))),
         "wilsons" => Ok(Box::new(WilsonsAlgo::new(ani))),

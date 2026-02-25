@@ -5,7 +5,7 @@ use crate::maze::Maze;
 pub fn apply_test_algo(algo: &str) -> Maze {
     let size = 50;
     let mut m = Maze::new(size);
-    let mut algo = get_algorithm(&algo.to_string(), false).unwrap();
+    let mut algo = get_algorithm(algo, false).unwrap();
     m.apply_algorithm(&mut algo).unwrap();
     m
 }

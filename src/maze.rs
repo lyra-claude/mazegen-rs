@@ -51,7 +51,7 @@ impl Maze {
     }
 
     pub fn apply_algorithm(&mut self,
-                           algo: &mut Box<MazeAlgo>) -> Result<(), String> {
+                           algo: &mut Box<dyn MazeAlgo>) -> Result<(), String> {
         algo.generate(self)
     }
 

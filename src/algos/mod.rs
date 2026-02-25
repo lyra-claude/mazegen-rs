@@ -1,5 +1,5 @@
 mod util;
-mod test_util;
+pub mod test_util;
 
 mod algo;
 pub use algo::*;
