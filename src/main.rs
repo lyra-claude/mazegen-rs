@@ -51,6 +51,9 @@ fn get_args() -> clap::ArgMatches<'static> {
             .long("svg")
             .takes_value(true)
             .help("Export maze as SVG to the given file path"))
+        .arg(Arg::with_name("heatmap")
+            .long("heatmap")
+            .help("Color cells by distance from start in SVG output"))
         .get_matches()
 }
 
@@ -101,7 +104,12 @@ fn main() -> Result<(), String> {
 
     // SVG export
     if let Some(path) = args.value_of("svg") {
-        let svg_content = svg::render_svg(&m, solution.as_ref());
+        let mode = if args.is_present("heatmap") {
+            svg::SvgMode::Heatmap
+        } else {
+            svg::SvgMode::Standard
+        };
+        let svg_content = svg::render_svg(&m, solution.as_ref(), &mode);
         std::fs::write(path, &svg_content)
             .map_err(|e| format!("Failed to write SVG: {}", e))?;
         println!("\nSVG written to {}", path);

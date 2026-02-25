@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::maze::Maze;
 use crate::solver::Solution;
 
@@ -12,8 +14,16 @@ const PATH_COLOR: &str = "#e94560";
 const START_COLOR: &str = "#0f3460";
 const END_COLOR: &str = "#16c79a";
 
+/// Render modes for SVG output.
+pub enum SvgMode {
+    /// Standard rendering with optional solution path.
+    Standard,
+    /// Distance heatmap: color each cell by BFS distance from (0,0).
+    Heatmap,
+}
+
 /// Render a maze as an SVG string.
-pub fn render_svg(maze: &Maze, solution: Option<&Solution>) -> String {
+pub fn render_svg(maze: &Maze, solution: Option<&Solution>, mode: &SvgMode) -> String {
     let size = maze.get_size();
     let total = PADDING * 2 + size * CELL_SIZE + WALL_WIDTH;
     let mut svg = format!(
@@ -22,7 +32,12 @@ pub fn render_svg(maze: &Maze, solution: Option<&Solution>) -> String {
 "#
     );
 
-    // Draw solution path first (behind walls)
+    // Draw heatmap cells (behind everything)
+    if let SvgMode::Heatmap = mode {
+        svg.push_str(&render_heatmap(maze, size));
+    }
+
+    // Draw solution path (behind walls)
     if let Some(sol) = solution {
         svg.push_str(&render_path(sol));
     }
@@ -136,6 +151,77 @@ fn wall_line(x1: f64, y1: f64, x2: f64, y2: f64) -> String {
 "#)
 }
 
+/// Compute BFS distances from (0,0) to every reachable cell.
+fn bfs_distances(maze: &Maze) -> Vec<Vec<Option<usize>>> {
+    let size = maze.get_size();
+    let mut dist: Vec<Vec<Option<usize>>> = vec![vec![None; size]; size];
+    let mut queue = VecDeque::new();
+    dist[0][0] = Some(0);
+    queue.push_back((0, 0));
+
+    while let Some((x, y)) = queue.pop_front() {
+        let d = dist[y][x].unwrap();
+        for (nx, ny) in maze.get_open_adj(x, y) {
+            if dist[ny][nx].is_none() {
+                dist[ny][nx] = Some(d + 1);
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+    dist
+}
+
+/// Map a value 0.0-1.0 to a color on a perceptually smooth gradient.
+/// Goes from deep blue (near) through cyan, green, yellow, to red (far).
+fn heatmap_color(t: f64) -> String {
+    let t = t.clamp(0.0, 1.0);
+
+    // 5-stop gradient: blue → cyan → green → yellow → red
+    let (r, g, b) = if t < 0.25 {
+        let s = t / 0.25;
+        (0.0, s, 1.0)
+    } else if t < 0.5 {
+        let s = (t - 0.25) / 0.25;
+        (0.0, 1.0, 1.0 - s)
+    } else if t < 0.75 {
+        let s = (t - 0.5) / 0.25;
+        (s, 1.0, 0.0)
+    } else {
+        let s = (t - 0.75) / 0.25;
+        (1.0, 1.0 - s, 0.0)
+    };
+
+    format!("#{:02x}{:02x}{:02x}",
+        (r * 255.0) as u8,
+        (g * 255.0) as u8,
+        (b * 255.0) as u8,
+    )
+}
+
+fn render_heatmap(maze: &Maze, size: usize) -> String {
+    let dist = bfs_distances(maze);
+    let max_dist = dist.iter().flatten().filter_map(|d| *d).max().unwrap_or(1) as f64;
+    let offset = PADDING as f64 + WALL_WIDTH as f64 / 2.0;
+    let cs = CELL_SIZE as f64;
+
+    let mut cells = String::new();
+    for y in 0..size {
+        for x in 0..size {
+            if let Some(d) = dist[y][x] {
+                let t = d as f64 / max_dist;
+                let color = heatmap_color(t);
+                let rx = offset + x as f64 * cs;
+                let ry = offset + y as f64 * cs;
+                cells.push_str(&format!(
+                    r#"<rect x="{rx:.1}" y="{ry:.1}" width="{cs:.1}" height="{cs:.1}" fill="{color}" opacity="0.6"/>
+"#
+                ));
+            }
+        }
+    }
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,7 +238,7 @@ mod tests {
     #[test]
     fn test_svg_contains_structure() {
         let m = make_maze("dfs", 5);
-        let svg = render_svg(&m, None);
+        let svg = render_svg(&m, None, &SvgMode::Standard);
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("</svg>"));
         assert!(svg.contains("<line")); // walls
@@ -163,7 +249,7 @@ mod tests {
     fn test_svg_with_solution() {
         let m = make_maze("dfs", 10);
         let sol = solve_bfs(&m, (0, 0), (9, 9)).unwrap();
-        let svg = render_svg(&m, Some(&sol));
+        let svg = render_svg(&m, Some(&sol), &SvgMode::Standard);
         assert!(svg.contains("<path")); // solution path
         assert!(svg.contains(PATH_COLOR));
     }
@@ -171,8 +257,19 @@ mod tests {
     #[test]
     fn test_svg_dimensions() {
         let m = make_maze("dfs", 10);
-        let svg = render_svg(&m, None);
+        let svg = render_svg(&m, None, &SvgMode::Standard);
         let expected = PADDING * 2 + 10 * CELL_SIZE + WALL_WIDTH;
         assert!(svg.contains(&format!("width=\"{}\"", expected)));
+    }
+
+    #[test]
+    fn test_svg_heatmap() {
+        let m = make_maze("dfs", 10);
+        let svg = render_svg(&m, None, &SvgMode::Heatmap);
+        // Heatmap should have many colored rectangles
+        assert!(svg.contains("opacity=\"0.6\""));
+        // All 100 cells should be colored (perfect maze = all reachable)
+        let rect_count = svg.matches("opacity=\"0.6\"").count();
+        assert_eq!(rect_count, 100);
     }
 }
