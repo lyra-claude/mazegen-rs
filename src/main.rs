@@ -54,6 +54,9 @@ fn get_args() -> clap::ArgMatches<'static> {
         .arg(Arg::with_name("heatmap")
             .long("heatmap")
             .help("Color cells by distance from start in SVG output"))
+        .arg(Arg::with_name("diameter")
+            .long("diameter")
+            .help("Find and display the longest path (tree diameter)"))
         .get_matches()
 }
 
@@ -93,6 +96,16 @@ fn main() -> Result<(), String> {
         }
     } else {
         m.print();
+    }
+
+    // Diameter
+    if args.is_present("diameter") {
+        let diam = solver::find_diameter(&m);
+        println!("\nDiameter: {} steps (longest shortest path)", diam.length());
+        println!("  From ({},{}) to ({},{})",
+            diam.path[0].0, diam.path[0].1,
+            diam.path.last().unwrap().0, diam.path.last().unwrap().1);
+        println!("  Turns: {}, Tortuosity: {:.2}", diam.turn_count(), diam.tortuosity());
     }
 
     // Analyze

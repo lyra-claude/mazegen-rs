@@ -88,6 +88,39 @@ pub fn solve_bfs(maze: &Maze, start: (usize, usize), end: (usize, usize)) -> Opt
     None
 }
 
+/// Find the diameter of the maze (longest shortest path between any two cells).
+/// Uses the tree diameter trick: BFS from any node to find the farthest node,
+/// then BFS from that node to find the true farthest. Works in O(n) for trees.
+pub fn find_diameter(maze: &Maze) -> Solution {
+    // First BFS from (0,0) to find the farthest cell
+    let far1 = bfs_farthest(maze, (0, 0));
+    // Second BFS from that cell to find the true farthest
+    let far2 = bfs_farthest(maze, far1);
+    // The path between far1 and far2 is the diameter
+    solve_bfs(maze, far1, far2).unwrap_or(Solution { path: vec![far1] })
+}
+
+/// BFS from start, return the farthest reachable cell.
+fn bfs_farthest(maze: &Maze, start: (usize, usize)) -> (usize, usize) {
+    let size = maze.get_size();
+    let mut visited = vec![vec![false; size]; size];
+    let mut queue = VecDeque::new();
+    visited[start.1][start.0] = true;
+    queue.push_back(start);
+    let mut farthest = start;
+
+    while let Some((x, y)) = queue.pop_front() {
+        farthest = (x, y);
+        for (nx, ny) in maze.get_open_adj(x, y) {
+            if !visited[ny][nx] {
+                visited[ny][nx] = true;
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+    farthest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +176,30 @@ mod tests {
         let sol = solve_bfs(&m, (0, 0), (0, 0)).unwrap();
         assert_eq!(sol.length(), 1);
         assert_eq!(sol.turn_count(), 0);
+    }
+
+    #[test]
+    fn test_diameter_at_least_as_long_as_corner_path() {
+        let m = make_maze("dfs", 15);
+        let corner = solve_bfs(&m, (0, 0), (14, 14)).unwrap();
+        let diam = find_diameter(&m);
+        assert!(
+            diam.length() >= corner.length(),
+            "diameter {} < corner-to-corner {}",
+            diam.length(), corner.length()
+        );
+    }
+
+    #[test]
+    fn test_diameter_path_is_connected() {
+        let m = make_maze("kruskals", 20);
+        let diam = find_diameter(&m);
+        for i in 1..diam.path.len() {
+            let (x1, y1) = diam.path[i - 1];
+            let (x2, y2) = diam.path[i];
+            let dx = (x1 as isize - x2 as isize).unsigned_abs();
+            let dy = (y1 as isize - y2 as isize).unsigned_abs();
+            assert_eq!(dx + dy, 1, "non-adjacent step at index {}", i);
+        }
     }
 }
