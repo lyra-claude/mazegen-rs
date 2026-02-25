@@ -159,6 +159,116 @@ impl Maze {
         ].into_iter().flatten().collect()
     }
 
+    /// Build a character grid representation of the maze.
+    /// Grid is (2*size+1) x (2*size+1). Cell (x,y) is at grid[2y+1][2x+1].
+    /// Walls are at even indices, cells at odd indices.
+    pub fn to_grid(&self) -> Vec<Vec<char>> {
+        let dim = 2 * self.size + 1;
+        let mut grid = vec![vec![' '; dim]; dim];
+
+        // Fill corners and walls
+        for gy in 0..dim {
+            for gx in 0..dim {
+                let even_y = gy % 2 == 0;
+                let even_x = gx % 2 == 0;
+
+                if even_y && even_x {
+                    // Junction
+                    grid[gy][gx] = self.junction_char(gx / 2, gy / 2);
+                } else if even_y && !even_x {
+                    // Horizontal wall between (gx/2, gy/2-1) and (gx/2, gy/2)
+                    let cx = gx / 2;
+                    if gy == 0 || gy == dim - 1 {
+                        grid[gy][gx] = '━';
+                    } else {
+                        let cy = gy / 2 - 1;
+                        if Walls::down(self.maze[cy][cx]) {
+                            grid[gy][gx] = '━';
+                        }
+                    }
+                } else if !even_y && even_x {
+                    // Vertical wall between (gx/2-1, gy/2) and (gx/2, gy/2)
+                    let cy = gy / 2;
+                    if gx == 0 || gx == dim - 1 {
+                        grid[gy][gx] = '┃';
+                    } else {
+                        let cx = gx / 2 - 1;
+                        if Walls::right(self.maze[cy][cx]) {
+                            grid[gy][gx] = '┃';
+                        }
+                    }
+                }
+                // odd-y, odd-x = cell interior, stays as space
+            }
+        }
+        grid
+    }
+
+    fn junction_char(&self, jx: usize, jy: usize) -> char {
+        // Junction at grid position (2*jx, 2*jy) is the corner
+        // where cells (jx-1,jy-1), (jx,jy-1), (jx-1,jy), (jx,jy) meet.
+        let has_up = jy > 0 && (jx == 0 || jx == self.size
+            || (jx > 0 && Walls::right(self.maze[jy - 1][jx - 1]))
+            || (jx < self.size && Walls::left(self.maze[jy - 1][jx])));
+        let has_down = jy < self.size && (jx == 0 || jx == self.size
+            || (jx > 0 && Walls::right(self.maze[jy][jx - 1]))
+            || (jx < self.size && Walls::left(self.maze[jy][jx])));
+        let has_left = jx > 0 && (jy == 0 || jy == self.size
+            || (jy > 0 && Walls::down(self.maze[jy - 1][jx - 1]))
+            || (jy < self.size && Walls::up(self.maze[jy][jx - 1])));
+        let has_right = jx < self.size && (jy == 0 || jy == self.size
+            || (jy > 0 && Walls::down(self.maze[jy - 1][jx]))
+            || (jy < self.size && Walls::up(self.maze[jy][jx])));
+
+        let idx = (has_left as usize) << 3
+                | (has_right as usize) << 2
+                | (has_up as usize) << 1
+                | (has_down as usize);
+
+        [' ', '╻', '╹', '┃', '╺', '┏', '┗', '┣',
+         '╸', '┓', '┛', '┫', '━', '┳', '┻', '╋'][idx]
+    }
+
+    /// Print the maze in grid format with optional solution path.
+    pub fn print_with_path(&self, path: &[(usize, usize)]) {
+        use std::collections::HashSet;
+
+        let mut grid = self.to_grid();
+
+        // Mark path cells and passages between them
+        let path_set: HashSet<(usize, usize)> = path.iter().cloned().collect();
+
+        for &(x, y) in path {
+            grid[2 * y + 1][2 * x + 1] = '·';
+        }
+        // Mark passages between consecutive path cells
+        for i in 1..path.len() {
+            let (x1, y1) = path[i - 1];
+            let (x2, y2) = path[i];
+            let gy = y1 + y2 + 1;
+            let gx = x1 + x2 + 1;
+            grid[gy][gx] = '·';
+        }
+
+        // Print with ANSI colors
+        let _ = path_set; // used above via grid marking
+        for row in &grid {
+            let mut line = String::new();
+            for &ch in row {
+                if ch == '·' {
+                    line.push_str("\x1b[31m·\x1b[0m"); // red path
+                } else if ch == ' ' {
+                    line.push(' ');
+                } else {
+                    line.push_str("\x1b[90m"); // dim gray walls
+                    line.push(ch);
+                    line.push_str("\x1b[0m");
+                }
+            }
+            println!("{}", line);
+        }
+    }
+
     pub fn remove_wall(&mut self, x: usize, y: usize, x2: usize, y2: usize) {
         let (min_x, min_y) = std::cmp::min((x, y), (x2, y2));
         let (max_x, max_y) = std::cmp::max((x, y), (x2, y2));

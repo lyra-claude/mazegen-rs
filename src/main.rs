@@ -71,24 +71,26 @@ fn main() -> Result<(), String> {
     let mut a = algos::get_algorithm(&algo, animate)?;
     m.apply_algorithm(&mut a)?;
 
-    // Always print the maze to terminal
-    m.print();
-
-    // Solve
+    // Solve if needed
     let solution = if args.is_present("solve") || args.is_present("analyze") || args.is_present("svg") {
-        let sol = solver::solve_bfs(&m, (0, 0), (size - 1, size - 1));
-        if args.is_present("solve") {
-            if let Some(ref s) = sol {
-                println!("\nSolution: {} steps, {} turns, tortuosity {:.2}",
-                    s.length(), s.turn_count(), s.tortuosity());
-            } else {
-                println!("\nNo solution found.");
-            }
-        }
-        sol
+        solver::solve_bfs(&m, (0, 0), (size - 1, size - 1))
     } else {
         None
     };
+
+    // Print maze (with path if solving)
+    if args.is_present("solve") {
+        if let Some(ref s) = solution {
+            m.print_with_path(&s.path);
+            println!("\nSolution: {} steps, {} turns, tortuosity {:.2}",
+                s.length(), s.turn_count(), s.tortuosity());
+        } else {
+            m.print();
+            println!("\nNo solution found.");
+        }
+    } else {
+        m.print();
+    }
 
     // Analyze
     if args.is_present("analyze") {
