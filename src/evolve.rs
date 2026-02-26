@@ -8,6 +8,7 @@ use std::collections::{HashSet, VecDeque};
 type Edge = ((usize, usize), (usize, usize));
 
 /// What metric to maximize.
+#[derive(Clone, Copy)]
 pub enum FitnessTarget {
     Difficulty,
     Tortuosity,
@@ -336,6 +337,10 @@ fn print_gen_stats(gen: usize, fitnesses: &[f64]) {
         gen, fitnesses[0], avg, fitnesses[fitnesses.len() - 1]);
 }
 
+pub fn target_name_pub(target: &FitnessTarget) -> &'static str {
+    target_name(target)
+}
+
 fn target_name(target: &FitnessTarget) -> &'static str {
     match target {
         FitnessTarget::Difficulty => "difficulty",
@@ -353,6 +358,323 @@ pub fn parse_target(s: &str) -> Result<FitnessTarget, String> {
         "solution_length" => Ok(FitnessTarget::SolutionLength),
         "dead_end_ratio" => Ok(FitnessTarget::DeadEndRatio),
         _ => Err(format!("Unknown target '{}'. Choose: difficulty, tortuosity, solution_length, dead_end_ratio", s)),
+    }
+}
+
+/// Parse a comma-separated list of objectives.
+pub fn parse_objectives(s: &str) -> Result<Vec<FitnessTarget>, String> {
+    s.split(',')
+        .map(|t| parse_target(t.trim()))
+        .collect()
+}
+
+// ── Multi-objective (NSGA-II) Pareto evolution ──────────────────────────
+
+/// Configuration for Pareto (multi-objective) evolution.
+pub struct ParetoConfig {
+    pub size: usize,
+    pub pop_size: usize,
+    pub generations: usize,
+    pub mutation_rate: f64,
+    pub objectives: Vec<FitnessTarget>,
+}
+
+impl Default for ParetoConfig {
+    fn default() -> Self {
+        Self {
+            size: 15,
+            pop_size: 80,
+            generations: 150,
+            mutation_rate: 0.3,
+            objectives: vec![FitnessTarget::Difficulty, FitnessTarget::Tortuosity],
+        }
+    }
+}
+
+/// Evaluate a genome on multiple objectives.
+fn evaluate_multi(genome: &Genome, objectives: &[FitnessTarget]) -> Vec<f64> {
+    let maze = genome.to_maze();
+    let analysis = analyze(&maze);
+    objectives.iter().map(|t| match t {
+        FitnessTarget::Difficulty => analysis.difficulty_score(),
+        FitnessTarget::Tortuosity => analysis.tortuosity().unwrap_or(0.0),
+        FitnessTarget::SolutionLength => analysis.solution_length().unwrap_or(0) as f64,
+        FitnessTarget::DeadEndRatio => analysis.dead_end_ratio(),
+    }).collect()
+}
+
+/// Returns true if a dominates b (>= on all objectives, strictly > on at least one).
+fn dominates(a: &[f64], b: &[f64]) -> bool {
+    let mut strictly_better = false;
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        if ai < bi {
+            return false;
+        }
+        if ai > bi {
+            strictly_better = true;
+        }
+    }
+    strictly_better
+}
+
+/// Non-dominated sorting: assign each individual to a front (0 = best).
+fn non_dominated_sort(fitnesses: &[Vec<f64>]) -> Vec<usize> {
+    let n = fitnesses.len();
+    let mut domination_count = vec![0usize; n];
+    let mut dominated_set: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut ranks = vec![0usize; n];
+
+    for i in 0..n {
+        for j in 0..n {
+            if i == j { continue; }
+            if dominates(&fitnesses[i], &fitnesses[j]) {
+                dominated_set[i].push(j);
+            } else if dominates(&fitnesses[j], &fitnesses[i]) {
+                domination_count[i] += 1;
+            }
+        }
+    }
+
+    // Build fronts iteratively.
+    let mut current_front: Vec<usize> = (0..n)
+        .filter(|&i| domination_count[i] == 0)
+        .collect();
+    let mut front_rank = 0;
+    for &i in &current_front {
+        ranks[i] = front_rank;
+    }
+
+    while !current_front.is_empty() {
+        let mut next_front = Vec::new();
+        for &i in &current_front {
+            for &j in &dominated_set[i] {
+                domination_count[j] -= 1;
+                if domination_count[j] == 0 {
+                    ranks[j] = front_rank + 1;
+                    next_front.push(j);
+                }
+            }
+        }
+        front_rank += 1;
+        current_front = next_front;
+    }
+
+    ranks
+}
+
+/// Crowding distance for individuals within the same front.
+fn crowding_distance(fitnesses: &[Vec<f64>], front_indices: &[usize]) -> Vec<f64> {
+    let n = front_indices.len();
+    if n <= 2 {
+        return vec![f64::INFINITY; n];
+    }
+
+    let num_obj = fitnesses[front_indices[0]].len();
+    let mut distances = vec![0.0f64; n];
+
+    for obj in 0..num_obj {
+        // Sort front members by this objective.
+        let mut sorted: Vec<usize> = (0..n).collect();
+        sorted.sort_by(|&a, &b| {
+            fitnesses[front_indices[a]][obj]
+                .partial_cmp(&fitnesses[front_indices[b]][obj])
+                .unwrap()
+        });
+
+        distances[sorted[0]] = f64::INFINITY;
+        distances[sorted[n - 1]] = f64::INFINITY;
+
+        let f_max = fitnesses[front_indices[sorted[n - 1]]][obj];
+        let f_min = fitnesses[front_indices[sorted[0]]][obj];
+        let range = f_max - f_min;
+        if range == 0.0 {
+            continue;
+        }
+
+        for i in 1..(n - 1) {
+            distances[sorted[i]] +=
+                (fitnesses[front_indices[sorted[i + 1]]][obj]
+                    - fitnesses[front_indices[sorted[i - 1]]][obj])
+                    / range;
+        }
+    }
+
+    distances
+}
+
+/// NSGA-II tournament selection: prefer lower rank, then higher crowding distance.
+fn nsga2_tournament(
+    ranks: &[usize],
+    crowd_dist: &[f64],
+    rng: &mut impl Rng,
+) -> usize {
+    let a = rng.gen_range(0, ranks.len());
+    let b = rng.gen_range(0, ranks.len());
+    if ranks[a] < ranks[b] {
+        a
+    } else if ranks[b] < ranks[a] {
+        b
+    } else if crowd_dist[a] > crowd_dist[b] {
+        a
+    } else {
+        b
+    }
+}
+
+/// A solution on the Pareto front.
+pub struct ParetoSolution {
+    pub maze: Maze,
+    pub analysis: MazeAnalysis,
+    pub objectives: Vec<f64>,
+}
+
+/// Run NSGA-II multi-objective evolution. Returns the Pareto front.
+pub fn evolve_pareto(config: &ParetoConfig) -> Vec<ParetoSolution> {
+    let mut rng = rand::thread_rng();
+
+    // Initialize population.
+    let mut genomes: Vec<Genome> = Vec::with_capacity(config.pop_size);
+    for i in 0..config.pop_size {
+        let algo_name = ALGORITHMS[i % ALGORITHMS.len()];
+        let mut maze = Maze::new(config.size);
+        let mut algo = get_algorithm(&algo_name.to_string(), false).unwrap();
+        maze.apply_algorithm(&mut algo).unwrap();
+        genomes.push(Genome::from_maze(&maze));
+    }
+
+    let mut fitnesses: Vec<Vec<f64>> = genomes.iter()
+        .map(|g| evaluate_multi(g, &config.objectives))
+        .collect();
+
+    let obj_names: Vec<&str> = config.objectives.iter().map(|t| target_name(t)).collect();
+    println!("=== Pareto Evolution ({0}x{0}) ===", config.size);
+    println!("  Population: {}  Generations: {}  Objectives: {}",
+        config.pop_size, config.generations, obj_names.join(", "));
+
+    let ranks = non_dominated_sort(&fitnesses);
+    let front0_count = ranks.iter().filter(|&&r| r == 0).count();
+    println!("  Gen    0  Pareto front size: {}", front0_count);
+
+    for gen in 1..=config.generations {
+        let ranks = non_dominated_sort(&fitnesses);
+
+        // Compute crowding distance for the full population.
+        // Group by front, compute per-front, then scatter back.
+        let max_rank = *ranks.iter().max().unwrap_or(&0);
+        let mut crowd_dist = vec![0.0f64; genomes.len()];
+        for r in 0..=max_rank {
+            let front: Vec<usize> = (0..genomes.len())
+                .filter(|&i| ranks[i] == r)
+                .collect();
+            if front.is_empty() { continue; }
+            let cd = crowding_distance(&fitnesses, &front);
+            for (fi, &idx) in front.iter().enumerate() {
+                crowd_dist[idx] = cd[fi];
+            }
+        }
+
+        // Generate offspring.
+        let mut offspring_genomes: Vec<Genome> = Vec::with_capacity(config.pop_size);
+        let mut offspring_fitnesses: Vec<Vec<f64>> = Vec::with_capacity(config.pop_size);
+
+        while offspring_genomes.len() < config.pop_size {
+            let a = nsga2_tournament(&ranks, &crowd_dist, &mut rng);
+            let b = nsga2_tournament(&ranks, &crowd_dist, &mut rng);
+            let mut child = genomes[a].crossover(&genomes[b], &mut rng);
+            if rng.gen::<f64>() < config.mutation_rate {
+                child.mutate(&mut rng);
+            }
+            let f = evaluate_multi(&child, &config.objectives);
+            offspring_fitnesses.push(f);
+            offspring_genomes.push(child);
+        }
+
+        // Combine parents + offspring (2N pool).
+        let combined_genomes: Vec<Genome> = genomes.into_iter()
+            .chain(offspring_genomes.into_iter())
+            .collect();
+        let combined_fitnesses: Vec<Vec<f64>> = fitnesses.into_iter()
+            .chain(offspring_fitnesses.into_iter())
+            .collect();
+
+        // Non-dominated sort on combined population.
+        let combined_ranks = non_dominated_sort(&combined_fitnesses);
+        let combined_max_rank = *combined_ranks.iter().max().unwrap_or(&0);
+
+        // Select next generation: fill front by front.
+        let mut next_indices: Vec<usize> = Vec::with_capacity(config.pop_size);
+        for r in 0..=combined_max_rank {
+            let front: Vec<usize> = (0..combined_genomes.len())
+                .filter(|&i| combined_ranks[i] == r)
+                .collect();
+            if next_indices.len() + front.len() <= config.pop_size {
+                // Whole front fits.
+                next_indices.extend(&front);
+            } else {
+                // Partial front: use crowding distance to pick the best.
+                let remaining = config.pop_size - next_indices.len();
+                let cd = crowding_distance(&combined_fitnesses, &front);
+                let mut sorted: Vec<usize> = (0..front.len()).collect();
+                sorted.sort_by(|&a, &b| cd[b].partial_cmp(&cd[a]).unwrap());
+                for i in 0..remaining {
+                    next_indices.push(front[sorted[i]]);
+                }
+                break;
+            }
+        }
+
+        genomes = next_indices.iter().map(|&i| combined_genomes[i].clone()).collect();
+        fitnesses = next_indices.iter().map(|&i| combined_fitnesses[i].clone()).collect();
+
+        if gen % 25 == 0 || gen == config.generations {
+            let gen_ranks = non_dominated_sort(&fitnesses);
+            let front_size = gen_ranks.iter().filter(|&&r| r == 0).count();
+            println!("  Gen {:>4}  Pareto front size: {}", gen, front_size);
+        }
+    }
+
+    // Extract Pareto front.
+    let final_ranks = non_dominated_sort(&fitnesses);
+    let mut front: Vec<ParetoSolution> = Vec::new();
+    for i in 0..genomes.len() {
+        if final_ranks[i] == 0 {
+            let maze = genomes[i].to_maze();
+            let analysis = analyze(&maze);
+            front.push(ParetoSolution {
+                maze,
+                analysis,
+                objectives: fitnesses[i].clone(),
+            });
+        }
+    }
+
+    // Sort front by first objective for consistent output.
+    front.sort_by(|a, b| b.objectives[0].partial_cmp(&a.objectives[0]).unwrap());
+    front
+}
+
+/// Print the Pareto front as a table.
+pub fn print_pareto_front(front: &[ParetoSolution], objectives: &[FitnessTarget]) {
+    let obj_names: Vec<&str> = objectives.iter().map(|t| target_name(t)).collect();
+
+    println!("\n=== Pareto Front ({} solutions) ===", front.len());
+
+    // Header
+    print!("  {:>4}", "#");
+    for name in &obj_names {
+        print!("  {:>12}", name);
+    }
+    println!("  {:>8}  {:>8}", "sol_len", "dead_end%");
+    println!("  {}", "-".repeat(4 + obj_names.len() * 14 + 20));
+
+    for (i, sol) in front.iter().enumerate() {
+        print!("  {:>4}", i + 1);
+        for val in &sol.objectives {
+            print!("  {:>12.2}", val);
+        }
+        println!("  {:>8}  {:>7.1}%",
+            sol.analysis.solution_length().unwrap_or(0),
+            sol.analysis.dead_end_ratio() * 100.0);
     }
 }
 
@@ -453,5 +775,81 @@ mod tests {
         assert_ne!(uf.find(0), uf.find(2));
         uf.union(1, 2);
         assert_eq!(uf.find(0), uf.find(2));
+    }
+
+    #[test]
+    fn test_dominates() {
+        assert!(dominates(&[3.0, 2.0], &[2.0, 1.0])); // strictly better on both
+        assert!(dominates(&[3.0, 2.0], &[3.0, 1.0])); // equal on one, better on other
+        assert!(!dominates(&[3.0, 1.0], &[2.0, 2.0])); // tradeoff: neither dominates
+        assert!(!dominates(&[2.0, 2.0], &[3.0, 1.0])); // tradeoff
+        assert!(!dominates(&[2.0, 2.0], &[2.0, 2.0])); // identical: no domination
+    }
+
+    #[test]
+    fn test_non_dominated_sort() {
+        // Front 0: (5,1) and (1,5) — non-dominated (tradeoff)
+        // Front 1: (3,1) — dominated by (5,1)
+        // Front 1: (1,3) — dominated by (1,5)
+        let fitnesses = vec![
+            vec![5.0, 1.0],
+            vec![1.0, 5.0],
+            vec![3.0, 1.0],
+            vec![1.0, 3.0],
+        ];
+        let ranks = non_dominated_sort(&fitnesses);
+        assert_eq!(ranks[0], 0); // (5,1) on front 0
+        assert_eq!(ranks[1], 0); // (1,5) on front 0
+        assert_eq!(ranks[2], 1); // (3,1) on front 1
+        assert_eq!(ranks[3], 1); // (1,3) on front 1
+    }
+
+    #[test]
+    fn test_crowding_distance_boundary() {
+        let fitnesses = vec![
+            vec![1.0, 5.0],
+            vec![3.0, 3.0],
+            vec![5.0, 1.0],
+        ];
+        let front = vec![0, 1, 2];
+        let cd = crowding_distance(&fitnesses, &front);
+        // Boundary solutions should have infinite distance.
+        assert!(cd[0].is_infinite());
+        assert!(cd[2].is_infinite());
+        // Middle solution should have finite distance.
+        assert!(cd[1].is_finite());
+        assert!(cd[1] > 0.0);
+    }
+
+    #[test]
+    fn test_pareto_evolution_finds_tradeoffs() {
+        let config = ParetoConfig {
+            size: 8,
+            pop_size: 30,
+            generations: 20,
+            mutation_rate: 0.3,
+            objectives: vec![FitnessTarget::Difficulty, FitnessTarget::Tortuosity],
+        };
+        let front = evolve_pareto(&config);
+        // Should find at least one Pareto-optimal solution.
+        assert!(!front.is_empty(), "Pareto front is empty");
+        // All solutions should be non-dominated with respect to each other.
+        for i in 0..front.len() {
+            for j in 0..front.len() {
+                if i == j { continue; }
+                assert!(
+                    !dominates(&front[i].objectives, &front[j].objectives),
+                    "solution {} dominates {} — not a valid Pareto front",
+                    i, j
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_objectives() {
+        let objs = parse_objectives("difficulty,tortuosity").unwrap();
+        assert_eq!(objs.len(), 2);
+        assert!(parse_objectives("invalid").is_err());
     }
 }

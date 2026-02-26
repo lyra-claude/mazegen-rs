@@ -74,6 +74,13 @@ fn get_args() -> clap::ArgMatches<'static> {
             .takes_value(true)
             .possible_values(&["difficulty", "tortuosity", "solution_length", "dead_end_ratio"])
             .help("Fitness target for evolution (default: difficulty)"))
+        .arg(Arg::with_name("pareto")
+            .long("pareto")
+            .help("Multi-objective Pareto evolution (NSGA-II)"))
+        .arg(Arg::with_name("objectives")
+            .long("objectives")
+            .takes_value(true)
+            .help("Comma-separated objectives for Pareto mode (default: difficulty,tortuosity)"))
         .get_matches()
 }
 
@@ -118,6 +125,30 @@ fn main() -> Result<(), String> {
             std::fs::write(path, &svg_content)
                 .map_err(|e| format!("Failed to write SVG: {}", e))?;
             println!("\nSVG written to {}", path);
+        }
+        return Ok(());
+    }
+
+    // Pareto mode: multi-objective NSGA-II evolution
+    if args.is_present("pareto") {
+        let obj_str = args.value_of("objectives").unwrap_or("difficulty,tortuosity");
+        let objectives = evolve::parse_objectives(obj_str)?;
+        let config = evolve::ParetoConfig {
+            size,
+            pop_size: value_t!(args, "pop_size", usize).unwrap_or(80),
+            generations: value_t!(args, "generations", usize).unwrap_or(150),
+            objectives: objectives.clone(),
+            ..evolve::ParetoConfig::default()
+        };
+        let front = evolve::evolve_pareto(&config);
+        evolve::print_pareto_front(&front, &objectives);
+
+        // Print the best maze (first on the front, highest on first objective).
+        if let Some(best) = front.first() {
+            println!("\nBest maze (by {}):", evolve::target_name_pub(&objectives[0]));
+            best.maze.print();
+            println!();
+            best.analysis.print_report();
         }
         return Ok(());
     }
