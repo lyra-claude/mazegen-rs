@@ -162,6 +162,13 @@ impl Genome {
         }
     }
 
+    /// Hamming distance: number of edges in symmetric difference.
+    fn hamming_distance(&self, other: &Self) -> usize {
+        let shared = self.edges.intersection(&other.edges).count();
+        // Each has n²-1 edges, symmetric difference = |A| + |B| - 2|A∩B|
+        (self.edges.len() + other.edges.len()) - 2 * shared
+    }
+
     /// Crossover: take the union of both parents' edges, then extract a
     /// random spanning tree using Kruskal's on the shuffled union.
     fn crossover(&self, other: &Self, rng: &mut impl Rng) -> Self {
@@ -240,6 +247,28 @@ fn evaluate(genome: &Genome, target: &FitnessTarget) -> f64 {
     }
 }
 
+/// Estimate population diversity: average normalized Hamming distance between sampled pairs.
+/// Returns a value in [0, 1]: 0 = all identical, 1 = no shared edges.
+fn population_diversity(genomes: &[Genome], rng: &mut impl Rng) -> f64 {
+    if genomes.len() < 2 {
+        return 0.0;
+    }
+    let max_distance = 2 * (genomes[0].size * genomes[0].size - 1);
+    if max_distance == 0 {
+        return 0.0;
+    }
+    // Sample up to 50 random pairs.
+    let samples = 50.min(genomes.len() * (genomes.len() - 1) / 2);
+    let mut total = 0.0;
+    for _ in 0..samples {
+        let a = rng.gen_range(0, genomes.len());
+        let mut b = rng.gen_range(0, genomes.len() - 1);
+        if b >= a { b += 1; }
+        total += genomes[a].hamming_distance(&genomes[b]) as f64 / max_distance as f64;
+    }
+    total / samples as f64
+}
+
 /// Tournament selection: pick k random individuals, return index of the best.
 fn tournament_select(
     fitnesses: &[f64],
@@ -286,7 +315,8 @@ pub fn evolve(config: &EvolutionConfig) -> (Maze, MazeAnalysis) {
         config.pop_size, config.generations, target_str);
     println!("  Mutation rate: {:.0}%  Tournament: {}  Elitism: {}",
         config.mutation_rate * 100.0, config.tournament_size, config.elite_count);
-    print_gen_stats(0, &fitnesses);
+    let div0 = population_diversity(&genomes, &mut rng);
+    print_gen_stats(0, &fitnesses, Some(div0));
 
     for gen in 1..=config.generations {
         let mut next_genomes: Vec<Genome> = Vec::with_capacity(config.pop_size);
@@ -322,7 +352,8 @@ pub fn evolve(config: &EvolutionConfig) -> (Maze, MazeAnalysis) {
 
         // Progress output every 25 generations and at the end.
         if gen % 25 == 0 || gen == config.generations {
-            print_gen_stats(gen, &fitnesses);
+            let div = population_diversity(&genomes, &mut rng);
+            print_gen_stats(gen, &fitnesses, Some(div));
         }
     }
 
@@ -331,10 +362,14 @@ pub fn evolve(config: &EvolutionConfig) -> (Maze, MazeAnalysis) {
     (best_maze, best_analysis)
 }
 
-fn print_gen_stats(gen: usize, fitnesses: &[f64]) {
+fn print_gen_stats(gen: usize, fitnesses: &[f64], diversity: Option<f64>) {
     let avg = fitnesses.iter().sum::<f64>() / fitnesses.len() as f64;
-    println!("  Gen {:>4}  Best: {:>6.2}  Avg: {:>6.2}  Worst: {:>6.2}",
-        gen, fitnesses[0], avg, fitnesses[fitnesses.len() - 1]);
+    match diversity {
+        Some(d) => println!("  Gen {:>4}  Best: {:>6.2}  Avg: {:>6.2}  Diversity: {:.3}",
+            gen, fitnesses[0], avg, d),
+        None => println!("  Gen {:>4}  Best: {:>6.2}  Avg: {:>6.2}",
+            gen, fitnesses[0], avg),
+    }
 }
 
 pub fn target_name_pub(target: &FitnessTarget) -> &'static str {
@@ -553,7 +588,8 @@ pub fn evolve_pareto(config: &ParetoConfig) -> Vec<ParetoSolution> {
 
     let ranks = non_dominated_sort(&fitnesses);
     let front0_count = ranks.iter().filter(|&&r| r == 0).count();
-    println!("  Gen    0  Pareto front size: {}", front0_count);
+    let div0 = population_diversity(&genomes, &mut rng);
+    println!("  Gen    0  Front: {:>3}  Diversity: {:.3}", front0_count, div0);
 
     for gen in 1..=config.generations {
         let ranks = non_dominated_sort(&fitnesses);
@@ -629,7 +665,8 @@ pub fn evolve_pareto(config: &ParetoConfig) -> Vec<ParetoSolution> {
         if gen % 25 == 0 || gen == config.generations {
             let gen_ranks = non_dominated_sort(&fitnesses);
             let front_size = gen_ranks.iter().filter(|&&r| r == 0).count();
-            println!("  Gen {:>4}  Pareto front size: {}", gen, front_size);
+            let div = population_diversity(&genomes, &mut rng);
+            println!("  Gen {:>4}  Front: {:>3}  Diversity: {:.3}", gen, front_size, div);
         }
     }
 
@@ -844,6 +881,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_hamming_distance() {
+        let a = make_genome("dfs", 10);
+        let b = make_genome("kruskals", 10);
+        let dist = a.hamming_distance(&b);
+        // Two different spanning trees must differ in at least 2 edges (swap one in, one out).
+        assert!(dist >= 2, "distance {} too small", dist);
+        // Max distance is 2*(n²-1) = 198 for 10x10.
+        assert!(dist <= 198, "distance {} too large", dist);
+        // Self-distance should be 0.
+        assert_eq!(a.hamming_distance(&a), 0);
+    }
+
+    #[test]
+    fn test_population_diversity_range() {
+        let mut rng = rand::thread_rng();
+        let genomes: Vec<Genome> = (0..20)
+            .map(|i| make_genome(ALGORITHMS[i % ALGORITHMS.len()], 8))
+            .collect();
+        let div = population_diversity(&genomes, &mut rng);
+        assert!(div >= 0.0 && div <= 1.0, "diversity {} out of range", div);
+        // A diverse population seeded from different algorithms should have non-trivial diversity.
+        assert!(div > 0.05, "diversity {} unexpectedly low", div);
     }
 
     #[test]
