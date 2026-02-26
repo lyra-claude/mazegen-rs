@@ -6,6 +6,7 @@ mod maze;
 mod solver;
 mod analysis;
 mod svg;
+mod evolve;
 
 use maze::Maze;
 use clap::{Arg, App};
@@ -57,6 +58,22 @@ fn get_args() -> clap::ArgMatches<'static> {
         .arg(Arg::with_name("diameter")
             .long("diameter")
             .help("Find and display the longest path (tree diameter)"))
+        .arg(Arg::with_name("evolve")
+            .long("evolve")
+            .help("Evolve a maze using a genetic algorithm to maximize a fitness target"))
+        .arg(Arg::with_name("pop_size")
+            .long("pop-size")
+            .takes_value(true)
+            .help("Population size for evolution (default: 80)"))
+        .arg(Arg::with_name("generations")
+            .long("generations")
+            .takes_value(true)
+            .help("Number of generations for evolution (default: 150)"))
+        .arg(Arg::with_name("target")
+            .long("target")
+            .takes_value(true)
+            .possible_values(&["difficulty", "tortuosity", "solution_length", "dead_end_ratio"])
+            .help("Fitness target for evolution (default: difficulty)"))
         .get_matches()
 }
 
@@ -70,6 +87,38 @@ fn main() -> Result<(), String> {
     if args.is_present("compare") {
         let trials = value_t!(args, "trials", usize).unwrap_or(50);
         analysis::compare_algorithms(size, trials);
+        return Ok(());
+    }
+
+    // Evolve mode: use GA to breed optimized mazes
+    if args.is_present("evolve") {
+        let target = args.value_of("target").unwrap_or("difficulty");
+        let config = evolve::EvolutionConfig {
+            size,
+            pop_size: value_t!(args, "pop_size", usize).unwrap_or(80),
+            generations: value_t!(args, "generations", usize).unwrap_or(150),
+            target: evolve::parse_target(target)?,
+            ..evolve::EvolutionConfig::default()
+        };
+        let (maze, analysis) = evolve::evolve(&config);
+        println!();
+        maze.print();
+        println!();
+        analysis.print_report();
+
+        // SVG export if requested
+        if let Some(path) = args.value_of("svg") {
+            let solution = solver::solve_bfs(&maze, (0, 0), (size - 1, size - 1));
+            let mode = if args.is_present("heatmap") {
+                svg::SvgMode::Heatmap
+            } else {
+                svg::SvgMode::Standard
+            };
+            let svg_content = svg::render_svg(&maze, solution.as_ref(), &mode);
+            std::fs::write(path, &svg_content)
+                .map_err(|e| format!("Failed to write SVG: {}", e))?;
+            println!("\nSVG written to {}", path);
+        }
         return Ok(());
     }
 
