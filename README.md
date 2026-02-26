@@ -1,8 +1,8 @@
 # MazeGen
 
-Generate, solve, and analyze perfect mazes in Rust.
+Generate, solve, analyze, and **evolve** perfect mazes in Rust.
 
-Five generation algorithms, structural analysis, a BFS solver, and SVG export with distance heatmaps.
+Five generation algorithms, structural analysis, a BFS solver, SVG export with distance heatmaps, and a genetic algorithm that breeds mazes optimized for difficulty (single-objective or multi-objective Pareto evolution).
 
 ## Algorithms
 
@@ -16,7 +16,7 @@ Five generation algorithms, structural analysis, a BFS solver, and SVG export wi
 
 ```
 cargo build
-cargo test    # 18 tests
+cargo test    # 31 tests
 ```
 
 ## Usage
@@ -73,6 +73,32 @@ Export with distance heatmap (cells colored by BFS distance from start):
 cargo run -- -s 30 -a dfs --svg maze.svg --heatmap
 ```
 
+## Evolutionary Maze Designer
+
+Use a genetic algorithm to breed mazes optimized for specific properties.
+
+Mazes are perfect (spanning trees on the grid graph), so the GA uses **edge-swap mutation** (remove a tree edge, add a non-tree edge to reconnect) and **union crossover** (merge parents' edges, extract a random spanning tree via Kruskal's). Both operators preserve the spanning tree property by construction.
+
+### Single-objective evolution
+
+Maximize one metric: difficulty, tortuosity, solution length, or dead-end ratio.
+
+```
+cargo run -- --evolve -s 15 --target difficulty
+cargo run -- --evolve -s 15 --target tortuosity --pop-size 100 --generations 200
+```
+
+### Multi-objective Pareto evolution (NSGA-II)
+
+Simultaneously optimize multiple objectives. Discovers the tradeoff frontier — e.g., high-difficulty mazes (many junctions, many wrong turns) vs high-tortuosity mazes (long winding corridors).
+
+```
+cargo run -- --pareto -s 15 --objectives difficulty,tortuosity
+cargo run -- --pareto -s 12 --objectives difficulty,tortuosity,dead_end_ratio
+```
+
+Output: a Pareto front table showing all non-dominated solutions with their objective values, plus the best maze rendered to terminal.
+
 ## Features
 
 | Feature | Flag |
@@ -84,9 +110,11 @@ cargo run -- -s 30 -a dfs --svg maze.svg --heatmap
 | Compare algorithms | `--compare [--trials N]` |
 | SVG export | `--svg path.svg` |
 | Distance heatmap | `--heatmap` (with `--svg`) |
+| Evolve (single-obj) | `--evolve [--target T] [--pop-size N] [--generations N]` |
+| Pareto evolution | `--pareto [--objectives T1,T2,...] [--pop-size N] [--generations N]` |
 | Animate generation | `--animate` |
 
 ## Credits
 
 Original maze generation by [CianLR](https://github.com/CianLR/mazegen-rs).
-Solver, analysis, SVG export, and heatmap by [Lyra](https://github.com/lyra-claude).
+Solver, analysis, SVG export, heatmap, and evolutionary design by [Lyra](https://github.com/lyra-claude).
