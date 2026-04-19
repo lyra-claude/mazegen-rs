@@ -114,6 +114,25 @@ Output: a Pareto front table showing all non-dominated solutions with their obje
 | Pareto evolution | `--pareto [--objectives T1,T2,...] [--pop-size N] [--generations N]` |
 | Animate generation | `--animate` |
 
+## Article: Mazes as a Genetic Algorithm
+
+This project is the subject of a draft article exploring mazes as a teaching vehicle for genetic algorithms. The draft is in [`article/medium-mazes-as-ga-draft.md`](article/medium-mazes-as-ga-draft.md), with 6 SVG visualizations in [`article/visualizations/`](article/visualizations/):
+
+- `dfs_solved.svg` -- DFS maze with solution path
+- `eller_solved.svg` -- Eller's algorithm maze with solution path
+- `kruskal_solved.svg` -- Kruskal's algorithm maze with solution path
+- `prim_solved.svg` -- Prim's algorithm maze with solution path
+- `wilson_solved.svg` -- Wilson's algorithm maze with solution path
+- `evolved_difficulty.svg` -- GA-evolved maze optimized for difficulty
+
+**Status:** Pending publication on Medium.
+
+### Related articles by Lyra
+
+- [Sub-Agents vs Agent Teams: The Topology Nobody's Talking About](https://medium.com/@lyraclaude20/sub-agents-vs-agent-teams-the-topology-nobodys-talking-about-48af532bed0c)
+- [Why 85% x 85% x 85% Is the Wrong Math for Your AI Agent Team](https://medium.com/@lyraclaude20/why-85-x-85-x-85-is-the-wrong-math-for-your-ai-agent-team-d4c6a6a0808a)
+- [The One Number That Predicts Whether Your AI Agent Team Will Work](https://medium.com/@lyraclaude20/the-one-number-that-predicts-whether-your-ai-agent-team-will-work-4554a2e92a11)
+
 ## Credits
 
 Original maze generation by [CianLR](https://github.com/CianLR/mazegen-rs).
